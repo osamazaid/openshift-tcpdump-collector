@@ -1,0 +1,138 @@
+apiVersion: apps/v1 # Corrected: Use apps/v1 for DaemonSet
+kind: DaemonSet
+metadata:
+  name: tcpdump-collector
+  labels:
+    app: tcpdump-collector
+spec:
+  selector:
+    matchLabels:
+      app: tcpdump-collector
+  template:
+    metadata:
+      labels:
+        app: tcpdump-collector
+    spec:
+      # IMPORTANT: This ServiceAccount must be bound to the 'privileged' SCC.
+      # You might need to create this ServiceAccount and bind it manually:
+      # oc create sa tcpdump-collector-sa -n <your-namespace>
+      # oc adm policy add-scc-to-user privileged -z tcpdump-collector-sa -n <your-namespace>
+      serviceAccountName: tcpdump-collector-sa
+      hostNetwork: true # Required to capture traffic on host network interfaces
+      hostPID: true     # Allows access to host processes if needed, though not strictly for tcpdump itself
+      # tolerations: # Removed the tolerations section as requested
+      #   - key: node-role.kubernetes.io/master
+      #     operator: Exists
+      #     effect: NoSchedule
+      #   - key: node.kubernetes.io/disk-pressure
+      #     operator: Exists
+      #     effect: NoSchedule
+      initContainers: # Added initContainer for SELinux context and directory creation
+        - name: init-selinux-fix
+          image: registry.redhat.io/rhel9/support-tools:latest # Changed to registry.redhat.io/rhel9/support-tools:latest
+          securityContext:
+            privileged: true # Needs privileged access to modify host filesystem attributes
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              # Install coreutils for chcon (if not already present in the image) using dnf
+              # Note: This image might already have necessary tools.
+              dnf update -y && dnf install -y coreutils || true # Use || true to gracefully handle if already installed or not found
+              dnf clean all
+
+              # Define the base directory for captures on the host
+              INIT_CAPTURE_DIR="/host/var/log/tcpdump"
+              echo "Ensuring directory ${INIT_CAPTURE_DIR} exists on host and setting SELinux context..."
+              mkdir -p ${INIT_CAPTURE_DIR}
+              # Set the SELinux context to allow container writes (may fail gracefully if SELinux is not primary)
+              chcon -t svirt_sandbox_file_t ${INIT_CAPTURE_DIR} || true
+              echo "SELinux context set for ${INIT_CAPTURE_DIR}."
+          volumeMounts:
+            - name: host-tcpdump-storage
+              mountPath: /host/var/log/tcpdump # Mount point inside the initContainer
+      containers:
+        - name: tcpdump-container
+          image: registry.redhat.io/rhel9/support-tools:latest # Changed to registry.redhat.io/rhel9/support-tools:latest
+          securityContext:
+            privileged: true # REQUIRED to run tcpdump and access network interfaces
+            capabilities:
+              add: ["NET_ADMIN", "NET_RAW"] # Explicitly add network capabilities
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              # Install tcpdump (if not already present in the image) using dnf
+              # This image might already have tcpdump pre-installed.
+              dnf update -y && dnf install -y tcpdump || true # Use || true to gracefully handle if already installed or not found
+              dnf clean all
+
+              # Define the base directory for captures on the host
+              CAPTURE_DIR="/host/var/log/tcpdump"
+              # Directory creation is now handled by initContainer, but keeping for robustness
+              # mkdir -p $CAPTURE_DIR
+
+              # Define the interface to capture on (e.g., eth0, bond0, any)
+              # Changed to 'enp3s0' as requested.
+              INTERFACE="enp3s0"
+
+              # Define the capture file prefix
+              FILE_PREFIX="tcpdump"
+
+              # Loop indefinitely to capture and rotate
+              while true; do
+                TIMESTAMP=$(date +"%Y%m%d-%H%M%S")
+                CAPTURE_FILE="${CAPTURE_DIR}/${FILE_PREFIX}-${TIMESTAMP}.pcap"
+                NEXT_ROTATE_TIME=$(date -d "tomorrow 00:00:00" +%s) # Midnight tomorrow
+
+                echo "Starting tcpdump capture to ${CAPTURE_FILE} on interface ${INTERFACE}..."
+                # Run tcpdump in the background
+                # -i $INTERFACE: Specify interface
+                # -w $CAPTURE_FILE: Write to file
+                # -s 0: Capture full packets (no snaplen limit)
+                # -Z root: Drop privileges after opening the capture file (good practice)
+                # You can add filters here, e.g., 'host 192.168.1.1 and port 80'
+                tcpdump -i ${INTERFACE} -w ${CAPTURE_FILE} -s 0 -Z root &
+                TCPDUMP_PID=$!
+                echo "tcpdump PID: ${TCPDUMP_PID}"
+
+                # Wait until midnight tomorrow, then kill tcpdump and rotate
+                CURRENT_TIME=$(date +%s)
+                SLEEP_DURATION=$((NEXT_ROTATE_TIME - CURRENT_TIME))
+
+                if [ "$SLEEP_DURATION" -le 0 ]; then
+                  # If current time is already past midnight, sleep for 1 second to avoid infinite loop
+                  echo "Current time is already past next rotation time. Sleeping for 1 second."
+                  sleep 1
+                else
+                  echo "Sleeping for ${SLEEP_DURATION} seconds until next rotation (${NEXT_ROTATE_TIME})..."
+                  sleep ${SLEEP_DURATION}
+                fi
+
+                echo "Stopping tcpdump (PID: ${TCPDUMP_PID})..."
+                kill ${TCPDUMP_PID}
+                wait ${TCPDUMP_PID} 2>/dev/null # Wait for tcpdump to terminate gracefully
+
+                # Optional: Compress the captured file
+                echo "Compressing ${CAPTURE_FILE}..."
+                gzip ${CAPTURE_FILE}
+
+                # Clean up old files (e.g., keep last 7 days)
+                echo "Cleaning up old tcpdump files..."
+                find ${CAPTURE_DIR} -name "${FILE_PREFIX}-*.pcap.gz" -mtime +7 -delete
+                find ${CAPTURE_DIR} -name "${FILE_PREFIX}-*.pcap" -mtime +7 -delete # In case compression failed
+
+                echo "Rotation complete. Starting new capture cycle."
+              done
+          volumeMounts:
+            - name: host-tcpdump-storage
+              mountPath: /host/var/log/tcpdump # Mount point inside the container
+      volumes:
+        - name: host-tcpdump-storage
+          hostPath:
+            path: /var/log/tcpdump # Path on the host node where files will be stored
+            type: DirectoryOrCreate # Ensures the directory exists or creates it
+      restartPolicy: Always # Always restart the container if it crashes
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+
