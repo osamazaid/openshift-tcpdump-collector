@@ -39,8 +39,6 @@ oc apply -f openshift/tcpdump-daemonset.yaml
 
 ## To run this DaemonSet on specific nodes
 
-Steps:
-
 1. Label your target nodes: To add a label to the nodes where you want the DaemonSet to run. For example, if you want to run it on nodes that have a label `tcpdump-enabled=true`, you would run:
 ~~~
 oc label node <node-name-1> tcpdump-enabled=true
