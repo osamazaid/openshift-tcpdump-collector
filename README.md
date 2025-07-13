@@ -34,7 +34,7 @@ oc project <your-namespace>
 ~~~
 Apply the DaemonSet:
 ~~~
-oc apply -f openshift/tcpdump-daemonset.yaml
+oc apply -f tcpdump-daemonset.yaml
 ~~~
 
 ## To run this DaemonSet on specific nodes
