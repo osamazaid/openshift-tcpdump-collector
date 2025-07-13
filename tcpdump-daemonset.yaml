@@ -1,4 +1,4 @@
-apiVersion: apps/v1 # Corrected: Use apps/v1 for DaemonSet
+apiVersion: apps/v1 
 kind: DaemonSet
 metadata:
   name: tcpdump-collector
@@ -52,7 +52,7 @@ spec:
               mountPath: /host/var/log/tcpdump # Mount point inside the initContainer
       containers:
         - name: tcpdump-container
-          image: registry.redhat.io/rhel9/support-tools:latest # Changed to registry.redhat.io/rhel9/support-tools:latest
+          image: registry.redhat.io/rhel9/support-tools:latest 
           securityContext:
             privileged: true # REQUIRED to run tcpdump and access network interfaces
             capabilities:
