@@ -67,4 +67,4 @@ FILE_PREFIX: Modify the prefix for the capture files.
 Retention Period: Adjust -mtime +7 in the find commands to keep files for more or fewer days.
 
 # License
-This project is licensed under the MIT License - see the LICENSE file for details.
+This project is licensed under the MIT License - see the [LICENSE](https://github.com/osamazaid/openshift-tcpdump-collector/blob/main/LICENSE) file for details.
